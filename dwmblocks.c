@@ -1,16 +1,19 @@
-#include<stdlib.h>
-#include<stdio.h>
-#include<string.h>
-#include<unistd.h>
-#include<signal.h>
-#include<X11/Xlib.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <X11/Xlib.h>
+
+#include "xcolors.h"
 #define LENGTH(X)               (sizeof(X) / sizeof (X[0]))
 
 typedef struct {
 	char* icon;
 	char* command;
 	unsigned int interval;
-	unsigned int signal;
+	int signal;
 } Block;
 void sighandler(int num);
 void replace(char *str, char old, char new);
@@ -30,13 +33,17 @@ void termhandler(int signum);
 static Display *dpy;
 static int screen;
 static Window root;
-static char statusbar[LENGTH(blocks)][50] = {0};
-static char statusstr[256];
-static char *statuscat;
-static const char *volupcmd[]  = { "volup", NULL };
-static const char *voldowncmd[]  = { "voldown", NULL };
-static const char *volmutecmd[]  = { "volmute", NULL };
-static int statusContinue = 1,volmuted = 0;
+#define MAX_BLOCK_LEN 128
+#define MAX_TOT_LEN 1024
+static char statusbar[LENGTH(blocks)][MAX_BLOCK_LEN] = {0};
+static Color colors[LENGTH(blocks)];
+static char statusstr[MAX_TOT_LEN];
+//static char *statuscat;
+//static const char *volupcmd[]  = { "volup", NULL };
+//static const char *voldowncmd[]  = { "voldown", NULL };
+//static const char *volmutecmd[]  = { "volmute", NULL };
+static int statusContinue = 1;
+//static int volmuted = 0;
 
 void replace(char *str, char old, char new)
 {
@@ -47,65 +54,83 @@ void replace(char *str, char old, char new)
 }
 
 //opens process *cmd and stores output in *output
-void getcmd(const Block *block, char *output)
+void getcmd(const Block *block, const Color *color, char *output)
 {
-	strcpy(output, block->icon);
+  output[0] = '\0';
+  snprintf(output, MAX_BLOCK_LEN, "%s%s ", color->fg, color->bg);
+  size_t i = strlen(output);
+  size_t color_len = i;
 	char *cmd = block->command;
 	FILE *cmdf = popen(cmd,"r");
 	if (!cmdf)
 		return;
-	//int N = strlen(output);
 	char c;
-	int i = strlen(block->icon);
-	while((c = fgetc(cmdf)) != EOF)
-		output[i++] = c;
-	if (delim != '\0' && --i)
-		output[i++] = delim;
-	output[i++] = '\0';
+	while((c = fgetc(cmdf)) != EOF) {
+    if (i >= MAX_BLOCK_LEN-1) break;
+    if (c != '\n') output[i++] = c;
+  }
 	pclose(cmdf);
+  if (i == color_len) {
+    output[0] = '\0';
+    return;
+  } else if (i+5 < MAX_BLOCK_LEN-2) {
+    output[i]='\0';
+    strcat(output, " ^d^");
+    i += 5;
+    if (delim != '\0' && --i)
+      output[i++] = delim;
+  }
+	output[i] = '\0';
 }
 
 void getcmds(int time)
 {
 	const Block* current;
-	for(int i = 0; i < LENGTH(blocks); i++)
-	{	
+	for(size_t i = 0; i < LENGTH(blocks); i++)
+	{
 		current = blocks + i;
-		if ((current->interval != 0 && time % current->interval == 0) || time == -1)
-			getcmd(current,statusbar[i]);
+		if ((current->interval != 0 && time % current->interval == 0) || time == -1) {
+			getcmd(current, &colors[i], statusbar[i]);
+      //printf("statusbar[%lu] = %s\n", i, statusbar[i]);
+    }
+
 	}
 }
 
 void getsigcmds(int signal)
 {
 	const Block *current;
-	for (int i = 0; i < LENGTH(blocks); i++)
+	for (size_t i = 0; i < LENGTH(blocks); i++)
 	{
 		current = blocks + i;
-		if (current->signal == signal)
-			getcmd(current,statusbar[i]);
+		if (current->signal == signal) {
+			getcmd(current, &colors[i], statusbar[i]);
+      //printf("statusbar[%lu] = %s\n", i, statusbar[i]);
+    }
 	}
 }
 
 void setupsignals()
 {
-	for(int i = 0; i < LENGTH(blocks); i++)
-	{	  
+	for(size_t i = 0; i < LENGTH(blocks); i++)
+	{
 		if (blocks[i].signal > 0)
 			signal(SIGRTMIN+blocks[i].signal, sighandler);
 	}
+  // also register colorsig
+  signal(SIGRTMIN+colorsig, sighandler);
 
 }
 
 void getstatus(char *str)
 {
 	int j = 0;
-	for(int i = 0; i < LENGTH(blocks); j+=strlen(statusbar[i++]))
-	{	
+	for(size_t i = 0; i < LENGTH(blocks); j+=strlen(statusbar[i++]))
+	{
+    if (j >= MAX_TOT_LEN) return;
 		strcpy(str + j, statusbar[i]);
 	}
 	str[--j] = '\0';
-
 }
 
 void setroot()
@@ -138,18 +163,26 @@ void statusloop()
 
 void statusinit()
 {
+  loadxrdb(LENGTH(blocks), colors);
 	statusloop();
 }
 
 
 void sighandler(int signum)
 {
-	getsigcmds(signum-SIGRTMIN);
-	setroot();
+  int sig_adj = signum-SIGRTMIN;
+  if (sig_adj == colorsig) {
+    loadxrdb(LENGTH(blocks), colors);
+    getcmds(-1);
+  } else {
+    getsigcmds(sig_adj);
+  }
+  setroot();
 }
 
 void termhandler(int signum)
 {
+  (void) signum;
 	statusContinue = 0;
 	exit(0);
 }
@@ -157,7 +190,7 @@ void termhandler(int signum)
 int main(int argc, char** argv)
 {
 	for(int i = 0; i < argc; i++)
-	{	
+	{
 		if (!strcmp("-d",argv[i]))
 			delim = argv[++i][0];
 	}

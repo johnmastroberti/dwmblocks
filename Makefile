@@ -1,9 +1,14 @@
-output: dwmblocks.o
-	gcc dwmblocks.o -lX11 -o dwmblocks
+CC=gcc
+CFLAGS=-Wall -Wextra
+LD=gcc
+LDFLAGS=-lX11
+
+dwmblocks: dwmblocks.o xcolors.o
 dwmblocks.o: dwmblocks.c blocks.h
-	gcc -c -lX11 dwmblocks.c 
+xcolors.o: xcolors.c xcolors.h
 clean:
-	rm *.o *.gch dwmblocks
-install: output
+	-rm -f *.o *.gch dwmblocks
+
+install: dwmblocks
 	mkdir -p /usr/local/bin
 	cp -f dwmblocks /usr/local/bin
